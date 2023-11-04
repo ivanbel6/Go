@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"html/template"
@@ -11,7 +12,19 @@ import (
 	"net/http"
 )
 
+var collection *mongo.Collection
+
 func main() {
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
+	client, err := mongo.Connect(context.Background(), clientOptions)
+	if err != nil {
+		fmt.Println("Ошибка при подключении к базе данных:", err)
+		return
+	}
+	defer client.Disconnect(context.Background())
+
+	collection = client.Database("Go_DB").Collection("Files")
+
 	http.HandleFunc("/", handleFileUpload)
 	http.ListenAndServe(":8080", nil)
 }
@@ -19,8 +32,26 @@ func main() {
 func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		// Отправка HTML формы для загрузки файла
+		cursor, err := collection.Find(context.Background(), bson.D{{}})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer cursor.Close(context.Background())
+
+		var files []string
+		for cursor.Next(context.Background()) {
+			var result bson.M
+			if err := cursor.Decode(&result); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			files = append(files, result["_id"].(primitive.ObjectID).Hex())
+		}
+
+		// Отправка HTML формы для загрузки файла с списком файлов
 		tmpl := template.Must(template.ParseFiles("upload.html"))
-		tmpl.Execute(w, nil)
+		tmpl.Execute(w, struct{ Files []string }{files})
 	} else if r.Method == http.MethodPost {
 		file, _, err := r.FormFile("file")
 		if err != nil {
@@ -35,15 +66,6 @@ func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Подключение к базе данных
-		clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
-		client, err := mongo.Connect(context.Background(), clientOptions)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		collection := client.Database("Go_DB").Collection("Files")
 		_, err = collection.InsertOne(context.Background(), bson.D{{"data", data}})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

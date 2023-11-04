@@ -2,11 +2,87 @@
 <html>
 <head>
     <title>Загрузка файла</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f2f2f2;
+            text-align: center;
+            margin: 0;
+            padding: 0;
+        }
+
+        form {
+            margin-top: 20px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 50%;
+            margin: 20px auto;
+            background-color: #fff;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: center;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        label {
+            background-color: #3498db;
+            color: #fff;
+            padding: 10px 20px;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+
+        input[type="submit"] {
+            background-color: #27ae60;
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+
+        h2 {
+            color: #333;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+
+        tr:hover {
+            background-color: #e0e0e0;
+        }
+    </style>
 </head>
 <body>
 <form method="POST" enctype="multipart/form-data">
-    <input type="file" name="file">
+    <label for="file">Выберите файл</label>
+    <input type="file" name="file" id="file">
     <input type="submit" value="Загрузить">
 </form>
+<h2>Список файлов:</h2>
+<table>
+    <tr>
+        <th>ID</th>
+    </tr>
+    {{range .Files}}
+    <tr>
+        <td>{{.}}</td>
+    </tr>
+    {{end}}
+</table>
 </body>
 </html>
