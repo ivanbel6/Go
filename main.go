@@ -24,7 +24,6 @@ func main() {
 	defer client.Disconnect(context.Background())
 
 	collection = client.Database("Go_DB").Collection("Files")
-
 	http.HandleFunc("/", handleFileUpload)
 	http.HandleFunc("/files/", handleFileDelete)
 	http.ListenAndServe(":8080", nil)
