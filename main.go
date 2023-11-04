@@ -26,7 +26,35 @@ func main() {
 	collection = client.Database("Go_DB").Collection("Files")
 
 	http.HandleFunc("/", handleFileUpload)
+	http.HandleFunc("/files/", handleFileDelete)
 	http.ListenAndServe(":8080", nil)
+}
+
+func handleFileDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		// Получение id из параметров URL
+		id := r.URL.Path[len("/files/"):]
+		objectID, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			http.Error(w, "Недопустимый id файла", http.StatusBadRequest)
+			return
+		}
+
+		// Удаление файла из базы данных
+		result, err := collection.DeleteOne(context.Background(), bson.M{"_id": objectID})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if result.DeletedCount == 0 {
+			http.Error(w, "Файл не найден", http.StatusNotFound)
+			return
+		}
+
+		fmt.Fprintln(w, "Файл успешно удален!")
+	} else {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
 }
 
 func handleFileUpload(w http.ResponseWriter, r *http.Request) {
