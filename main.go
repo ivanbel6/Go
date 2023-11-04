@@ -1,41 +1,57 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"html/template"
+	"io/ioutil"
 	"net/http"
 )
 
-type User struct {
-	name                  string
-	age                   uint16 //целое число это не может быть отрицательным
-	money                 int16
-	avg_grades, happiness float64
-}
-
-func (u User) getAllInfo() string {
-	return fmt.Sprintf("User name is: %s. He is %d", u.name, u.age)
-}
-func (u *User) setNewName(newName string) {
-	u.name = newName
-}
-func home_page(w http.ResponseWriter, r *http.Request) {
-	bob := User{"Bob", 25, -50, 4.2, 0.8}
-	bob.setNewName("Ivan")
-	fmt.Fprintf(w, bob.getAllInfo())
-
-}
-
-func contacks_page(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Contcks page is here")
-}
-
-func handleRequest() {
-	http.HandleFunc("/", home_page)
-	http.HandleFunc("/contacts/", contacks_page)
+func main() {
+	http.HandleFunc("/", handleFileUpload)
 	http.ListenAndServe(":8080", nil)
 }
 
-func main() {
+func handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		// Отправка HTML формы для загрузки файла
+		tmpl := template.Must(template.ParseFiles("upload.html"))
+		tmpl.Execute(w, nil)
+	} else if r.Method == http.MethodPost {
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
 
-	handleRequest()
+		data, err := ioutil.ReadAll(file)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Подключение к базе данных
+		clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
+		client, err := mongo.Connect(context.Background(), clientOptions)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		collection := client.Database("Go_DB").Collection("Files")
+		_, err = collection.InsertOne(context.Background(), bson.D{{"data", data}})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Fprintln(w, "Файл успешно загружен!")
+	} else {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
 }
