@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -24,14 +25,73 @@ func main() {
 	defer client.Disconnect(context.Background())
 
 	collection = client.Database("Go_DB").Collection("Files")
+
 	http.HandleFunc("/", handleFileUpload)
 	http.HandleFunc("/files/", handleFileDelete)
+	http.HandleFunc("/info", handleFileList)
+	http.HandleFunc("/specific/", handleSpecificFile)
+
 	http.ListenAndServe(":8080", nil)
+}
+
+func handleSpecificFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		id := r.URL.Path[len("/specific/"):]
+		objectID, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			http.Error(w, "Недопустимый id файла", http.StatusBadRequest)
+			return
+		}
+
+		var result bson.M
+		err = collection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&result)
+		if err != nil {
+			http.Error(w, "Файл не найден", http.StatusNotFound)
+			return
+		}
+
+		data, ok := result["data"].(primitive.Binary)
+		if !ok {
+			http.Error(w, "Данные файла недоступны", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Disposition", "attachment; filename="+id)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write(data.Data)
+	} else {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
+}
+
+func handleFileList(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		cursor, err := collection.Find(context.Background(), bson.D{})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer cursor.Close(context.Background())
+
+		var files []string
+		for cursor.Next(context.Background()) {
+			var result bson.M
+			if err := cursor.Decode(&result); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			files = append(files, result["_id"].(primitive.ObjectID).Hex())
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(files)
+	} else {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
 }
 
 func handleFileDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
-		// Получение id из параметров URL
 		id := r.URL.Path[len("/files/"):]
 		objectID, err := primitive.ObjectIDFromHex(id)
 		if err != nil {
@@ -39,7 +99,6 @@ func handleFileDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Удаление файла из базы данных
 		result, err := collection.DeleteOne(context.Background(), bson.M{"_id": objectID})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -58,8 +117,7 @@ func handleFileDelete(w http.ResponseWriter, r *http.Request) {
 
 func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		// Отправка HTML формы для загрузки файла
-		cursor, err := collection.Find(context.Background(), bson.D{{}})
+		cursor, err := collection.Find(context.Background(), bson.D{})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -76,7 +134,6 @@ func handleFileUpload(w http.ResponseWriter, r *http.Request) {
 			files = append(files, result["_id"].(primitive.ObjectID).Hex())
 		}
 
-		// Отправка HTML формы для загрузки файла с списком файлов
 		tmpl := template.Must(template.ParseFiles("upload.html"))
 		tmpl.Execute(w, struct{ Files []string }{files})
 	} else if r.Method == http.MethodPost {
