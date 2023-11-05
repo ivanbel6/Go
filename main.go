@@ -31,7 +31,51 @@ func main() {
 	http.HandleFunc("/info", handleFileList)
 	http.HandleFunc("/specific/", handleSpecificFile)
 
+	http.HandleFunc("/update/", handleFileUpdate)
 	http.ListenAndServe(":8080", nil)
+}
+
+func handleFileUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPut {
+		id := r.URL.Path[len("/update/"):]
+		objectID, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			http.Error(w, "Недопустимый id файла", http.StatusBadRequest)
+			return
+		}
+
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
+
+		data, err := ioutil.ReadAll(file)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		result, err := collection.UpdateOne(
+			context.Background(),
+			bson.M{"_id": objectID},
+			bson.D{{"$set", bson.D{{"data", data}}}},
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if result.MatchedCount == 0 {
+			http.Error(w, "Файл не найден", http.StatusNotFound)
+			return
+		}
+
+		fmt.Fprintln(w, "Файл успешно обновлен!")
+	} else {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	}
 }
 
 func handleSpecificFile(w http.ResponseWriter, r *http.Request) {
