@@ -2,206 +2,187 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"html/template"
-	"io/ioutil"
+	"io"
+	"log"
 	"net/http"
+	"strings"
+	"time"
 )
 
-var collection *mongo.Collection
+var (
+	bucket *gridfs.Bucket
+	client *mongo.Client
+)
 
 func main() {
-	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
-	client, err := mongo.Connect(context.Background(), clientOptions)
+	var err error
+
+	client, err = mongo.NewClient(options.Client().ApplyURI("mongodb://localhost:27017"))
 	if err != nil {
-		fmt.Println("Ошибка при подключении к базе данных:", err)
+		log.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err = client.Connect(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bucket, err = gridfs.NewBucket(
+		client.Database("Go_DB"),
+	)
+	if err != nil {
+		log.Println(err)
 		return
 	}
-	defer client.Disconnect(context.Background())
 
-	collection = client.Database("Go_DB").Collection("Files")
+	http.HandleFunc("/upload", handleFileUpload)
+	http.HandleFunc("/download/", handleFileDownload)
+	http.HandleFunc("/delete/", handleFileDelete)
+	http.HandleFunc("/files", handleFileList)
 
-	http.HandleFunc("/", handleFileUpload)
-	http.HandleFunc("/files/", handleFileDelete)
-	http.HandleFunc("/info", handleFileList)
-	http.HandleFunc("/specific/", handleSpecificFile)
+	http.HandleFunc("/file/", handleFileGetInfo)
 
-	http.HandleFunc("/update/", handleFileUpdate)
-	http.ListenAndServe(":8080", nil)
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func handleFileUpdate(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPut {
-		id := r.URL.Path[len("/update/"):]
-		objectID, err := primitive.ObjectIDFromHex(id)
-		if err != nil {
-			http.Error(w, "Недопустимый id файла", http.StatusBadRequest)
-			return
-		}
-
-		file, _, err := r.FormFile("file")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer file.Close()
-
-		data, err := ioutil.ReadAll(file)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		result, err := collection.UpdateOne(
-			context.Background(),
-			bson.M{"_id": objectID},
-			bson.D{{"$set", bson.D{{"data", data}}}},
-		)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if result.MatchedCount == 0 {
-			http.Error(w, "Файл не найден", http.StatusNotFound)
-			return
-		}
-
-		fmt.Fprintln(w, "Файл успешно обновлен!")
-	} else {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+func handleFileGetInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET is supported", http.StatusMethodNotAllowed)
+		return
 	}
-}
 
-func handleSpecificFile(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		id := r.URL.Path[len("/specific/"):]
-		objectID, err := primitive.ObjectIDFromHex(id)
-		if err != nil {
-			http.Error(w, "Недопустимый id файла", http.StatusBadRequest)
-			return
-		}
-
-		var result bson.M
-		err = collection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&result)
-		if err != nil {
-			http.Error(w, "Файл не найден", http.StatusNotFound)
-			return
-		}
-
-		data, ok := result["data"].(primitive.Binary)
-		if !ok {
-			http.Error(w, "Данные файла недоступны", http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Disposition", "attachment; filename="+id)
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(data.Data)
-	} else {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	fileID := strings.TrimPrefix(r.URL.Path, "/file/")
+	objectID, err := primitive.ObjectIDFromHex(fileID)
+	if err != nil {
+		http.Error(w, "Invalid file ID", http.StatusBadRequest)
+		return
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	var fileInfo bson.M
+	err = client.Database("Go_DB").Collection("fs.files").FindOne(ctx, bson.M{"_id": objectID}).Decode(&fileInfo)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	fmt.Fprintf(w, "File ID: %s, File Name: %s, File Size: %d, Upload Date: %v\n", fileInfo["_id"], fileInfo["filename"], fileInfo["length"], fileInfo["uploadDate"])
 }
 
 func handleFileList(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		cursor, err := collection.Find(context.Background(), bson.D{})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer cursor.Close(context.Background())
-
-		var files []string
-		for cursor.Next(context.Background()) {
-			var result bson.M
-			if err := cursor.Decode(&result); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			files = append(files, result["_id"].(primitive.ObjectID).Hex())
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(files)
-	} else {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET is supported", http.StatusMethodNotAllowed)
+		return
 	}
-}
 
-func handleFileDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodDelete {
-		id := r.URL.Path[len("/files/"):]
-		objectID, err := primitive.ObjectIDFromHex(id)
-		if err != nil {
-			http.Error(w, "Недопустимый id файла", http.StatusBadRequest)
-			return
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
 
-		result, err := collection.DeleteOne(context.Background(), bson.M{"_id": objectID})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if result.DeletedCount == 0 {
-			http.Error(w, "Файл не найден", http.StatusNotFound)
-			return
-		}
+	// Используйте глобальную переменную client
+	coll := client.Database("Go_DB").Collection("fs.files")
 
-		fmt.Fprintln(w, "Файл успешно удален!")
-	} else {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	cursor, err := coll.Find(ctx, bson.M{})
+	if err != nil {
+		http.Error(w, "Error while retriving files", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var results []bson.M
+	if err = cursor.All(ctx, &results); err != nil {
+		http.Error(w, "Error while parsing files", http.StatusInternalServerError)
+		return
+	}
+
+	for _, result := range results {
+		fmt.Fprintf(w, "File Name: %s, File Size: %d, Upload Date: %v\n", result["filename"], result["length"], result["uploadDate"])
 	}
 }
 
 func handleFileUpload(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		cursor, err := collection.Find(context.Background(), bson.D{})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer cursor.Close(context.Background())
-
-		var files []string
-		for cursor.Next(context.Background()) {
-			var result bson.M
-			if err := cursor.Decode(&result); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			files = append(files, result["_id"].(primitive.ObjectID).Hex())
-		}
-
-		tmpl := template.Must(template.ParseFiles("upload.html"))
-		tmpl.Execute(w, struct{ Files []string }{files})
-	} else if r.Method == http.MethodPost {
-		file, _, err := r.FormFile("file")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer file.Close()
-
-		data, err := ioutil.ReadAll(file)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		_, err = collection.InsertOne(context.Background(), bson.D{{"data", data}})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		fmt.Fprintln(w, "Файл успешно загружен!")
-	} else {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST is supported", http.StatusMethodNotAllowed)
+		return
 	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	uploadStream, err := bucket.OpenUploadStream(header.Filename, &options.UploadOptions{})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer uploadStream.Close()
+
+	_, err = io.Copy(uploadStream, file)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Fprintf(w, "File uploaded successfully with ID: %s", uploadStream.FileID)
+}
+
+func handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET is supported", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileID := strings.TrimPrefix(r.URL.Path, "/download/")
+	objectID, err := primitive.ObjectIDFromHex(fileID)
+	if err != nil {
+		http.Error(w, "Invalid file ID", http.StatusBadRequest)
+		return
+	}
+
+	downloadStream, err := bucket.OpenDownloadStream(objectID)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	defer downloadStream.Close()
+
+	_, err = io.Copy(w, downloadStream)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func handleFileDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Only DELETE is supported", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileID := strings.TrimPrefix(r.URL.Path, "/delete/")
+	objectID, err := primitive.ObjectIDFromHex(fileID)
+	if err != nil {
+		http.Error(w, "Invalid file ID", http.StatusBadRequest)
+		return
+	}
+
+	err = bucket.Delete(objectID)
+	if err != nil {
+		http.Error(w, "File not found or error while deleting", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Fprintln(w, "File deleted successfully")
 }
